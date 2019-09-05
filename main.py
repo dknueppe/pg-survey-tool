@@ -1,139 +1,120 @@
 #!/usr/bin/env python3
-#%%
+
+from pathlib import Path
+import re
+import tkinter as tk
+from tkinter import ttk
 import numpy as np
-from numpy.random import permutation
-from collections import namedtuple
-from scipy.spatial import distance_matrix
-from tkinter import *
+import matplotlib
+from matplotlib.backends.backend_tkagg import FigureCanvasAgg, NavigationToolbar2Tk
+from PIL import Image, ImageTk
+from tsp import tsp_solver
+
+
+class Model():
+
+    query_pattern = ''
+    survey_patterns = {
+        'Serbule Rubywall Crystall' : r'\[Status\].*'
+    }
+
+    def __init__(self, chat_log, survey_option):
+        self.chat_log = chat_log
+        self.query_pattern = survey_option
+        locations = self.parse_chat(chat_log)
+        self.locations = np.concatenate(([[0,0]], locations, [[0,0]]))
+        self.tsp = tsp_solver(self.locations)
+
+    def parse_chat(self, chat_log, num=None):
+        pattern = re.compile(self.query_pattern)
+        with open(chat_log, 'r') as f:
+            loc = []
+            for line in f:
+                coord = []
+                if not pattern.findall(line):
+                    continue
+                for word in line.split():
+                    if(re.match(r'^\d{1,4}m$', word)):
+                        coord.append(int(word[:-1]))
+                    if (word == 'west'):
+                        coord[0] *= -1
+                    if (word == 'north.'):
+                        coord[1] *= -1
+                if (len(coord) == 2):
+                    loc.append(np.array(coord))
+        if num is not None:
+            return np.array(loc[-1 * num:])
+        else:
+            return np.array(loc)
 
 
 class Region():
-
-    Map_dim = namedtuple('Map_dim', ['x', 'y', 'color'])
-
-    def __init__(self, image):
-        self.region = mpimg.imread(image)
-        self.image_origin = image
-        self.dim = Region.Map_dim(*(self.region.shape))
-        self.player_coord = np.array([[self.dim.y // 2 + 30, self.dim.x // 2 - 15]])
-
-    def __eq__(self, other):
-        if(self.image_origin == other.image_origin):
-            return True
-        else:
-            return False
-
-
-class Locations():
-
-    def __init__(self, chat_log, num=None):
-        pass
-
-
-class Tsp():
-    ''' Class that creates the population for a Genetic Algorithm.
-        Currently there is no GA implemented, the first generation though
-        is already there and consist of tours which are determined via the 
-        (greedy) nearest neighbour algorithm. There is one tour for every
-        possible starting point, thus there are already some really good 
-        tours present.
+    ''' This class holds all the information required by the GUI to display
+        a region.
     '''
+    # image     : is a png file
+    #landmarks  : is a dictionary linking landmarks to coordinates
 
-    def __init__(self, locations, start_eq_end=True, pop_size=10):
-        ''' start_eq_end : If true the distance, fitness and propability calculation
-                           take a last edge from the current last to the first point
-                           into account.
-            locations    : Is a list or array type wich contains points in 2D-space.
-                           which are visited once (or twice if tour ends where it began)
-        '''
-        self.start_eq_end = start_eq_end
-        self.num_loc = len(locations)
-        self.ptp_dists = distance_matrix(locations, locations)
-        self.nn_lut = np.array([np.argsort(dists)[1:] for dists in self.ptp_dists])
-        self.pop = np.array([self.nearest_neighbour(i) for i in range(self.num_loc)])
-        self.dists = self.calc_dists()
-        self.calc_fitnesses()
-        self.calc_probabiltys()
+    def __init__(self, image, landmarks):
+        self.image = image
+        self.landmarks = landmarks
+
+
+
+#__________________________________Control____________________________________
+class Foo(tk.Frame):
+
+    def __init__(self, master, region, name='', *args, **kwargs):
+        self.master = master
+        self.region = region
+        self.name = name
+        self.image = Image.open(region).resize((957, 1000))
+        self.aspect_ratio = self.image.width / self.image.height
+        self.render = ImageTk.PhotoImage(self.image)
+        super().__init__(master, *args, **kwargs)
+        self.show_image()
+
+    def show_image(self):
+        self.create_image(0, 0, image = self.render, anchor = tk.NW, tag = 'map')
+
+    #def fit_image(self, event):
+    #    self.delete('map')
+    #    ar = event.width / event.height
+    #    if (ar < self.aspect_ratio):
+    #        ratio = self.winfo_reqwidth() / self.image.width
+    #    else:
+    #        ratio = self.winfo_reqheight() / self.image.height
+    #    new_dim = (self.image.width * ratio, self.image.height * ratio)
+    #    img = self.image.resize(new_dim)
+    #    rend = ImageTk.PhotoImage(img)
+    #    self.create_image(0, 0, image = rend, anchor = NW, tag = 'map')
+
+
+def main():
+    chatlog = 'foo.log'
+    surveys = parse_chat(chatlog)
+    ratio_pxpm = 602 / 1000
+    serb_well = np.array([746, 734]) / ratio_pxpm
+    locations = np.concatenate(([[0, 0]], surveys)) + serb_well
+    routes = tsp_solver(locations)
+
+    shortest_graph = np.array([locations[i] for i in routes.two_opt()])
+    shortest_graph = shortest_graph * ratio_pxpm
+
+    root = tk.Tk()
+    root.title('Project:Gorgon Survey Tool')
+
+    region = Region(root, 'serbule_map.png', 'Serbule', width = 957, height = 1000, bg='black')
+    region.pack(side=tk.LEFT)
+    loc_ordered = shortest_graph * 957 / 1434
+    for point, next_point in zip(loc_ordered, np.roll(loc_ordered, -1, axis = 0)):
+        region.create_line(*point, *next_point, width = 3, fill = 'blue', smooth = True)
+
+    inventory = tk.Frame(root, width = 500, height = 1000, bg='#423930')
+    inventory.pack(side=tk.RIGHT)
     
-    def calc_dists(self):
-        dists = np.zeros(len(self.pop))
-        for k, tour in enumerate(self.pop):
-            for i, j in zip(tour, tour[1:]):
-                dists[k] += self.ptp_dists[i][j]
-            if(self.start_eq_end):
-                dists[k] += self.ptp_dists[-1][0]
-        return dists
-
-    def calc_fitnesses(self):
-        self.fitnesses = 1 / self.dists
-
-    def calc_probabiltys(self):
-        self.probabiltys = self.fitnesses / np.sum(self.fitnesses)
-
-    def nearest_neighbour(self, node):
-        ''' create an array representing the tour, which will contain the order of indices.
-        '''
-        tour = np.full(self.num_loc, self.num_loc, dtype = np.int32)
-        tour[0] = node
-        for i in range(1, len(tour)):
-            for n in self.nn_lut[tour[i - 1]]:
-                if(np.all(tour != n)):
-                    tour[i] = n
-                    break
-        tour = np.roll(tour, - np.argmin(tour))
-        return tour
-
-    def pick_trip(self):
-        ran = np.random.random()
-        i = 0
-        while(ran > 0):
-            ran -= self.probabiltys[i]
-            i += 1
-        return self.pop[i-1]
-
-    def shortest_trip(self):
-        st = np.argmax(self.fitnesses) 
-        return self.pop[st]
-
-    #def create_new_generation(self, kind='mutation', rate=0.5):
-    #    tmp = self.pop
-    #    for i in range(len(self.new_pop)):
-    #        if(kind == 'mutation'):
-    #            self.new_pop[i] = Trip.mutate_trip(self.pick_trip(), rate)
-    #        if(kind == 'crossover'):
-    #            self.new_pop[i] = Trip.cross_trips((self.pick_trip(), self.pick_trip()))
-    #    self.pop = self.new_pop
-    #    self.new_pop = tmp
-    #    self.calc_fitnesses()
-    #    self.calc_probabiltys()
+    root.mainloop()
 
 
-root = Tk()
-root.title = ('Project:Gordon Survey Tool')
-canvas = Canvas(width = 1500, height = 1500, bg='black')
-canvas.pack()
-region = PhotoImage(file = 'serbule_map.png')
-canvas.create_image(region.width() // 2, region.height() // 2,  image = region)
-root.mainloop()
-
-#num_surveys = 100
-#
-#
-#serb = Region('serbule_map.png')
-#surveys = np.random.randint(0, 1434, (num_surveys, 2))
-#locations = np.concatenate((serb.player_coord, surveys))
-#pop = Population(serb, locations, pop_size = len(locations))
-#
-#ax= plt.subplot(111, frameon=False)
-#ax.set_xticks([])
-#ax.set_yticks([])
-#
-#shortest_trip = np.array([np.array(locations[i]) for i in pop.shortest_trip()])
-#shortest_trip = np.append(shortest_trip, serb.player_coord).reshape(num_surveys + 2, 2)
-#
-#plt.imshow(serb.region)
-#ax.plot(shortest_trip.T[0], shortest_trip.T[1])
-#plt.show()
-#
-
-#%%
+if __name__ == "__main__":
+    main()
