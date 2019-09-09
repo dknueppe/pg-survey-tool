@@ -1,118 +1,151 @@
 #!/usr/bin/env python3
 
+import datetime
 from pathlib import Path
 import re
 import tkinter as tk
-from tkinter import ttk
 import numpy as np
-import matplotlib
-from matplotlib.backends.backend_tkagg import FigureCanvasAgg, NavigationToolbar2Tk
-from PIL import Image, ImageTk
+from matplotlib.figure import Figure
+from matplotlib import image as mpl_image
+from matplotlib.backend_bases import key_press_handler
+from matplotlib.backends.backend_tkagg import (
+    FigureCanvasTkAgg, NavigationToolbar2Tk)
 from tsp import tsp_solver
 
 
+default_dir = Path.home() / Path('.config/unity3d/Elder Game/Project Gorgon/ChatLogs')
+
 class Model():
 
-    query_pattern = ''
-    survey_patterns = {
-        'Serbule Rubywall Crystall' : r'\[Status\].*'
-    }
+    _guard_pattern = re.compile(r'^\d{2}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\s\[Status\]')
+    _dist_pattern  = re.compile(r'\d{1,4}m')
 
-    def __init__(self, chat_log, survey_option):
-        self.chat_log = chat_log
-        self.query_pattern = survey_option
-        locations = self.parse_chat(chat_log)
-        self.locations = np.concatenate(([[0,0]], locations, [[0,0]]))
+    def __init__(self, directory = default_dir):
+        self.directory = directory
+        self.chat_log = self._current_chat_log()
+        locations = self.parse_chat(num = 25)
+        self.locations = np.concatenate(([[0,0]], locations))
         self.tsp = tsp_solver(self.locations)
+        self.shortest_graph = self.tsp.two_opt()
+        #print(self.shortest_graph)
+        #print((np.unique(self.locations, axis = 0)))
+        #print(len(self.shortest_graph))
 
-    def parse_chat(self, chat_log, num=None):
-        pattern = re.compile(self.query_pattern)
-        with open(chat_log, 'r') as f:
+    def parse_chat(self, num=None):
+        with open(self.chat_log, 'r') as f:
             loc = []
             for line in f:
-                coord = []
-                if not pattern.findall(line):
-                    continue
-                for word in line.split():
-                    if(re.match(r'^\d{1,4}m$', word)):
-                        coord.append(int(word[:-1]))
-                    if (word == 'west'):
+                if self._guard_pattern.match(line):
+                    coord = [int(dist[:-1]) for dist in self._dist_pattern.findall(line)]
+                    if 'west' in line:
                         coord[0] *= -1
-                    if (word == 'north.'):
+                    if 'north' in line:
                         coord[1] *= -1
-                if (len(coord) == 2):
-                    loc.append(np.array(coord))
-        if num is not None:
-            return np.array(loc[-1 * num:])
-        else:
-            return np.array(loc)
+                    if(len(coord) == 2):
+                        loc.append(coord)
+            if num is not None:
+                return np.array(loc[-1 * num:])
+            else:
+                return np.array(loc)
+
+    def _current_chat_log(self):
+        d = datetime.datetime.now()
+        chat_log = 'Chat-{:02d}-{:02d}-{:02d}.log'.format(d.year - 2000, d.month, d.day)
+        return self.directory / Path(chat_log)
+
+    def next_spot(self):
+        tmp = np.copy(self.shortest_graph[1:-1])
+        for _ in range(len(tmp)):
+            ret = tmp[0]
+            tmp[tmp > ret] -= 1
+            tmp = tmp[1:]
+            yield ret
+
+
+class View(tk.Frame):
+
+    def __init__(self, master):
+        super().__init__(master)
+        self.fig = Figure()
+        self.fig.patch.set_facecolor('#222222')
+        self.ax = self.fig.add_subplot(111, frameon=False)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=master)
+        self.data = np.array([])
+        self.scale = 1
+        self.image = ''
+        self.inventory = tk.Frame(master)
+        self.inventory.config(bg = '#222222')
+        self.inventory.pack(side = tk.RIGHT)
+        self.update_inv = tk.Button(self.inventory, text = 'Next', bg = '#a9a9a9', highlightthickness = 0)
+        self.update_inv.pack()
+        self.next_item = tk.Label(self.inventory, text = 'Next: \nFound in\nrow: \ncol: ')
+        self.next_item.config(bg = '#222222',fg = '#a9a9a9', font = ('Helvetica', 13))
+        self.next_item.pack(padx = 40, pady = 20)
+        self.inventory_cols = 10
+
+    def update_graph(self):
+        self.ax.cla()
+        self.ax.set_xticks([])
+        self.ax.set_yticks([])
+        self.ax.imshow(mpl_image.imread(self.image))
+        x, y = self.data.swapaxes(0, 1)
+        self.ax.plot(x * self.scale, y * self.scale, lw=3)
+        self.ax.scatter(x * self.scale, y * self.scale, lw=1, c='r')
+        self.canvas.draw()
+        self.canvas.get_tk_widget().pack(side=tk.LEFT, fill=tk.BOTH, expand=1)
+
+    def update_control(self, num):
+        self.next_item.config(text = 'Next: {}\nFound in\nrow: {}\ncol: {}'.format(
+            num, (num - 1) // self.inventory_cols + 1, (num - 1) % self.inventory_cols + 1))
+
+
+class Controller():
+
+    def __init__(self, master, model, view, regions):
+        self.model = model
+        self.view = view
+        survey_map = self.model.next_spot()
+        self.view.update_inv.config(command = lambda: view.update_control(next(survey_map)))
+        self.regions = regions
+        self.foo()
+    
+    def foo(self):
+        self.view.scale = regions['Serbule'].scale
+        data = np.array([self.model.locations[i] for i in self.model.shortest_graph])
+        self.view.data = data + self.regions['Serbule'].landmarks['Well']
+        self.view.image = self.regions['Serbule'].image
+        self.view.update_graph()
 
 
 class Region():
     ''' This class holds all the information required by the GUI to display
         a region.
     '''
-    # image     : is a png file
-    #landmarks  : is a dictionary linking landmarks to coordinates
+    # image     : is a png file (string)
+    # scale     : pixel per meter (or whatever unit of measurement)
+    # landmarks : is a dictionary linking landmarks to coordinates
 
-    def __init__(self, image, landmarks):
+    def __init__(self, image, scale, landmarks):
         self.image = image
+        self.scale = scale
         self.landmarks = landmarks
 
 
+serb = Region('serbule_map.png', 602 / 1000,
+              {'Well' : (np.array([[746, 734]]) * 1000 / 602).astype(int)})
 
-#__________________________________Control____________________________________
-class Foo(tk.Frame):
+regions = {'Serbule' : serb}
 
-    def __init__(self, master, region, name='', *args, **kwargs):
-        self.master = master
-        self.region = region
-        self.name = name
-        self.image = Image.open(region).resize((957, 1000))
-        self.aspect_ratio = self.image.width / self.image.height
-        self.render = ImageTk.PhotoImage(self.image)
-        super().__init__(master, *args, **kwargs)
-        self.show_image()
-
-    def show_image(self):
-        self.create_image(0, 0, image = self.render, anchor = tk.NW, tag = 'map')
-
-    #def fit_image(self, event):
-    #    self.delete('map')
-    #    ar = event.width / event.height
-    #    if (ar < self.aspect_ratio):
-    #        ratio = self.winfo_reqwidth() / self.image.width
-    #    else:
-    #        ratio = self.winfo_reqheight() / self.image.height
-    #    new_dim = (self.image.width * ratio, self.image.height * ratio)
-    #    img = self.image.resize(new_dim)
-    #    rend = ImageTk.PhotoImage(img)
-    #    self.create_image(0, 0, image = rend, anchor = NW, tag = 'map')
-
+bar = 42
 
 def main():
-    chatlog = 'foo.log'
-    surveys = parse_chat(chatlog)
-    ratio_pxpm = 602 / 1000
-    serb_well = np.array([746, 734]) / ratio_pxpm
-    locations = np.concatenate(([[0, 0]], surveys)) + serb_well
-    routes = tsp_solver(locations)
-
-    shortest_graph = np.array([locations[i] for i in routes.two_opt()])
-    shortest_graph = shortest_graph * ratio_pxpm
-
     root = tk.Tk()
+    root['bg'] = '#222222'
     root.title('Project:Gorgon Survey Tool')
-
-    region = Region(root, 'serbule_map.png', 'Serbule', width = 957, height = 1000, bg='black')
-    region.pack(side=tk.LEFT)
-    loc_ordered = shortest_graph * 957 / 1434
-    for point, next_point in zip(loc_ordered, np.roll(loc_ordered, -1, axis = 0)):
-        region.create_line(*point, *next_point, width = 3, fill = 'blue', smooth = True)
-
-    inventory = tk.Frame(root, width = 500, height = 1000, bg='#423930')
-    inventory.pack(side=tk.RIGHT)
-    
+    #foo = Model(directory='.')
+    foo = Model()
+    view = View(root)
+    Controller(root, foo, view, regions)
     root.mainloop()
 
 

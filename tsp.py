@@ -117,15 +117,13 @@ class tsp_solver():
         while improvement_factor > improvement_threshold:
             distance_to_beat = best_distance
             for i in range(1, len(tour[1:-1])):
-                for j in range(i + 1, len(tour[:-1])):
+                for j in range(i + 1, len(tour)):
                     new_tour = self.two_opt_swap(tour, i, j)
                     new_dist = self.dist(new_tour)
                     if new_dist < best_distance:
                         tour = new_tour
                         best_distance = new_dist
             improvement_factor = 1 - best_distance / distance_to_beat
-        print(self.dist(tour))
-        print(self.dist(self.shortest_graph))
         return tour
 
     @property
