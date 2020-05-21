@@ -5,8 +5,11 @@ from pathlib import Path
 import re
 import tkinter as tk
 import numpy as np
+from threading import Thread
+import time
 from matplotlib.figure import Figure
 from matplotlib import image as mpl_image
+from matplotlib.animation import FuncAnimation
 from matplotlib.backend_bases import key_press_handler
 from matplotlib.backends.backend_tkagg import (
     FigureCanvasTkAgg, NavigationToolbar2Tk)
@@ -23,13 +26,10 @@ class Model():
     def __init__(self, directory = default_dir):
         self.directory = directory
         self.chat_log = self._current_chat_log()
-        locations = self.parse_chat(num = 25)
+        locations = self.parse_chat(50)
         self.locations = np.concatenate(([[0,0]], locations))
         self.tsp = tsp_solver(self.locations)
         self.shortest_graph = self.tsp.two_opt()
-        #print(self.shortest_graph)
-        #print((np.unique(self.locations, axis = 0)))
-        #print(len(self.shortest_graph))
 
     def parse_chat(self, num=None):
         with open(self.chat_log, 'r') as f:
@@ -43,10 +43,14 @@ class Model():
                         coord[1] *= -1
                     if(len(coord) == 2):
                         loc.append(coord)
+            print(len(loc))
+            return np.array(loc)
             if num is not None:
                 return np.array(loc[-1 * num:])
+                #print(len(loc[-1 * (num - 2): -2]))
+                #return np.array(loc[-1 * (num - 2): -2])
             else:
-                return np.array(loc)
+                return np.array(loc[:-80])
 
     def _current_chat_log(self):
         d = datetime.datetime.now()
@@ -66,37 +70,48 @@ class View(tk.Frame):
 
     def __init__(self, master):
         super().__init__(master)
+        self.data = np.array([])
+        self.scale = 1
+        self.image = ''
+        self.inventory_cols = 10
+        self.current_loc = -1
+
         self.fig = Figure()
         self.fig.patch.set_facecolor('#222222')
         self.ax = self.fig.add_subplot(111, frameon=False)
         self.canvas = FigureCanvasTkAgg(self.fig, master=master)
-        self.data = np.array([])
-        self.scale = 1
-        self.image = ''
+        self.canvas.get_tk_widget().pack(side=tk.LEFT, fill=tk.BOTH, expand=1)
+
         self.inventory = tk.Frame(master)
         self.inventory.config(bg = '#222222')
         self.inventory.pack(side = tk.RIGHT)
+
         self.update_inv = tk.Button(self.inventory, text = 'Next', bg = '#a9a9a9', highlightthickness = 0)
         self.update_inv.pack()
+
         self.next_item = tk.Label(self.inventory, text = 'Next: \nFound in\nrow: \ncol: ')
         self.next_item.config(bg = '#222222',fg = '#a9a9a9', font = ('Helvetica', 13))
         self.next_item.pack(padx = 40, pady = 20)
-        self.inventory_cols = 10
 
-    def update_graph(self):
+    def init_graph(self):
         self.ax.cla()
         self.ax.set_xticks([])
         self.ax.set_yticks([])
         self.ax.imshow(mpl_image.imread(self.image))
-        x, y = self.data.swapaxes(0, 1)
-        self.ax.plot(x * self.scale, y * self.scale, lw=3)
-        self.ax.scatter(x * self.scale, y * self.scale, lw=1, c='r')
+        x, y = self.scale * self.data.swapaxes(0, 1)
+        self.ax.plot(x, y, lw=3, zorder = 1)
+        self.ax.scatter(x, y, c='r', zorder = 2)
+
+    def animate_graph(self):
+        x, y = self.scale * self.data.swapaxes(0, 1)
+        new_scatter = lambda _ : self.ax.scatter(x[self.current_loc], y[self.current_loc], c='g', zorder = 3)
+        _ = FuncAnimation(self.fig, new_scatter, init_func = self.init_graph, interval = 10)
         self.canvas.draw()
-        self.canvas.get_tk_widget().pack(side=tk.LEFT, fill=tk.BOTH, expand=1)
 
     def update_control(self, num):
         self.next_item.config(text = 'Next: {}\nFound in\nrow: {}\ncol: {}'.format(
             num, (num - 1) // self.inventory_cols + 1, (num - 1) % self.inventory_cols + 1))
+        self.current_loc += 1
 
 
 class Controller():
@@ -104,17 +119,17 @@ class Controller():
     def __init__(self, master, model, view, regions):
         self.model = model
         self.view = view
-        survey_map = self.model.next_spot()
-        self.view.update_inv.config(command = lambda: view.update_control(next(survey_map)))
+        self.survey_map = self.model.next_spot()
+        self.view.update_inv.config(command = lambda: self.view.update_control(next(self.survey_map)))
         self.regions = regions
         self.foo()
-    
+
     def foo(self):
         self.view.scale = regions['Serbule'].scale
         data = np.array([self.model.locations[i] for i in self.model.shortest_graph])
         self.view.data = data + self.regions['Serbule'].landmarks['Well']
         self.view.image = self.regions['Serbule'].image
-        self.view.update_graph()
+        self.view.animate_graph()
 
 
 class Region():
@@ -138,14 +153,45 @@ regions = {'Serbule' : serb}
 
 bar = 42
 
+
+def observe_chat(**kwargs):
+    time.sleep(2)
+    # another hotfix
+    #_survey_found_pattern = re.compile(r'^\d{2}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\s\[Status\] Rubywall Crystal ((\b\w*\b) added to inventory.|added to inventory.)')
+    _survey_found_pattern = re.compile(r'^\d{2}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\s\[Status\] You earned 25 XP in Geology.')
+    _timestamp_pattern = re.compile(r'^\d{2}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}')
+    file = open(kwargs['model'].chat_log)
+    while file.readline():
+        pass
+    survey_map = kwargs['model'].next_spot()
+    num_iter = kwargs['num_it']
+    kwargs['view'].update_control(next(survey_map))
+    num_iter = len(kwargs['model'].shortest_graph)
+    current_survey_node_ts = 60 # this is 60 seconds so it would've normally wrapped around
+    while num_iter:
+        line = file.readline()
+        match = _survey_found_pattern.match(line)
+        if match:
+            next_survey_node_ts = int(_timestamp_pattern.match(line)[0][-2:])
+            if current_survey_node_ts != next_survey_node_ts:
+                kwargs['view'].update_control(next(survey_map))
+                num_iter -=1
+                time.sleep(0.3)        
+        else:
+            time.sleep(0.05)        
+    file.close()
+
+
 def main():
     root = tk.Tk()
     root['bg'] = '#222222'
     root.title('Project:Gorgon Survey Tool')
-    #foo = Model(directory='.')
-    foo = Model()
+    model = Model()
     view = View(root)
-    Controller(root, foo, view, regions)
+    controller = Controller(root, model, view, regions)
+    chat_parser_thread = Thread(target=observe_chat, 
+                                kwargs={'num_it': 80, 'view': view, 'model': model, 'controller': controller})
+    chat_parser_thread.start()
     root.mainloop()
 
 
